@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use std::io;
 
 use winreg::RegKey;
-use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_ALL_ACCESS};
+use winreg::enums::HKEY_LOCAL_MACHINE;
 
 const CHROMIUM_BASES: &[&str] = &[
     r"SOFTWARE\Policies\Google\Chrome",
@@ -84,8 +84,8 @@ fn apply_list(path: &str, previously_ours: &[String], ours_now: &[String]) -> io
     Ok((true, added))
 }
 
-/// ブロック状態に応じてポリシーを書き換える。`ours` はキーごとに前回書いた値 (更新される)。
-pub fn apply(rules: &[String], blocked: bool, ours: &mut BTreeMap<String, Vec<String>>) -> io::Result<bool> {
+/// `rules` (今ブロックすべきサイト) が入った状態にポリシーを書き換える。`ours` はキーごとに前回書いた値 (更新される)。
+pub fn apply(rules: &[String], ours: &mut BTreeMap<String, Vec<String>>) -> io::Result<bool> {
     let mut changed = false;
     let mut targets: Vec<(String, Vec<String>)> = CHROMIUM_BASES
         .iter()
@@ -94,9 +94,8 @@ pub fn apply(rules: &[String], blocked: bool, ours: &mut BTreeMap<String, Vec<St
     targets.push((format!(r"{FIREFOX_BASE}\WebsiteFilter\Block"), firefox_patterns(rules)));
 
     for (path, patterns) in targets {
-        let now: Vec<String> = if blocked { patterns } else { Vec::new() };
         let prev = ours.get(&path).cloned().unwrap_or_default();
-        let (c, added) = apply_list(&path, &prev, &now)?;
+        let (c, added) = apply_list(&path, &prev, &patterns)?;
         changed |= c;
         ours.insert(path, added);
     }
@@ -123,22 +122,6 @@ fn enforce_doh_off() -> io::Result<bool> {
         }
     }
     Ok(changed)
-}
-
-/// アンインストール時: このアプリが書いた値をすべて消す。
-pub fn remove_all(ours: &mut BTreeMap<String, Vec<String>>) -> io::Result<()> {
-    for (path, prev) in ours.iter() {
-        apply_list(path, prev, &[])?;
-    }
-    ours.clear();
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    for base in CHROMIUM_BASES {
-        if let Ok(key) = hklm.open_subkey_with_flags(base, KEY_ALL_ACCESS) {
-            let _ = key.delete_value("DnsOverHttpsMode");
-        }
-    }
-    let _ = hklm.delete_subkey(format!(r"{FIREFOX_BASE}\DNSOverHTTPS"));
-    Ok(())
 }
 
 #[cfg(test)]

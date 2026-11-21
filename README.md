@@ -1,13 +1,18 @@
 # web-blocker (animeblock)
 
-毎日決まった時間帯 (既定 21:00〜07:00) に、アニメを中心とした動画配信サイトへのアクセスを
-ブロックする Windows 用の常駐サービスです。ブロック時間中は解除・アンインストールできません。
+アニメを中心とした動画配信サイトへのアクセスをブロックする Windows 用の常駐サービスです。
+サイトは 2 種類に分かれます。
+
+- **恒久ブロック**: 時間に関係なく常にブロック。一度入れたら外せません
+- **時間帯ブロック**: 毎日決まった時間帯 (既定 21:00〜07:00) だけブロック。時間外なら外せます
+
+**アンインストールの手段はありません。** 恒久ブロックを外させないため、意図的に用意していません。
 
 ## 仕組み
 
 | 層 | 内容 |
 |---|---|
-| hosts ファイル | 対象ドメインを 0.0.0.0 / ::1 に向ける。全ブラウザ・アプリに効く。ブロック中はファイルを開きっぱなしにして他から書き換え・削除できなくし、管理区間を消されても 2 秒以内に戻す |
+| hosts ファイル | 対象ドメインを 0.0.0.0 / ::1 に向ける。全ブラウザ・アプリに効く。ブロック対象がある間 (恒久ブロックがあるので実質常時) はファイルを開きっぱなしにして他から書き換え・削除できなくし、管理区間を消されても 2 秒以内に戻す |
 | ブラウザポリシー | Chrome / Edge / Brave の URLBlocklist、Firefox の WebsiteFilter に書き込む。サブドメインやパス (例: `amazon.co.jp/gp/video`) まで止められる |
 | 暗号化 DNS の無効化 | ブラウザの DNS over HTTPS をポリシーで止め、hosts を迂回されないようにする |
 | 時刻 | 時刻サーバー (NTP) と同期し、OS の時計やタイムゾーンを変えても判定がずれない |
@@ -29,15 +34,15 @@ cargo build --release
 animeblock install                   # インストールしてすぐ開始
 animeblock status                    # 状態確認
 animeblock list                      # 対象サイト一覧
-animeblock add example.com           # サイト追加 (いつでも可)
-animeblock remove example.com        # サイトを外す (ブロック時間外のみ。既定サイトも外せる)
-animeblock set-hours 22:00 06:00     # 時間変更 (ブロック時間外のみ)
-animeblock uninstall                 # アンインストール (ブロック時間外のみ)
+animeblock add example.com           # 時間帯ブロックに追加 (いつでも可)
+animeblock add --permanent example.com  # 恒久ブロックに追加 (いつでも可。二度と外せない)
+animeblock remove example.com        # 時間帯ブロックから外す (ブロック時間外のみ。恒久ブロックは外せない)
+animeblock set-hours 22:00 06:00     # 時間帯ブロックの時間変更 (ブロック時間外のみ)
 ```
 
 インストール後の実行ファイルは `C:\Program Files\AnimeBlock\animeblock.exe` です。
 
-**注意: ブロック時間中にインストールすると、その時点からブロックが始まり、終了時刻まで解除できません。**
+**注意: インストールした時点から恒久ブロックが始まり、二度と解除できません。新しい版への入れ替えもできません。**
 
 ### 動作確認 (システムを変更しない)
 
@@ -49,8 +54,10 @@ animeblock simulate --hosts .\test-hosts --at 21:00
 
 ## 既定のブロック対象
 
-YouTube、dアニメストア、Lemino、ABEMA、Netflix、Prime Video、U-NEXT、DMM TV、Disney+、Hulu、
-FOD、TVer、TELASA、バンダイチャンネル、ニコニコ、Crunchyroll、HIDIVE、bilibili。
+- 恒久ブロック: dアニメストア、Lemino、ABEMA、Netflix、Prime Video、U-NEXT、DMM TV、Disney+、Hulu、
+  FOD、TVer、TELASA、バンダイチャンネル、ニコニコ、Crunchyroll、HIDIVE、bilibili
+- 時間帯ブロック: YouTube
+
 一覧は `src/sites.rs` または `animeblock list` で確認できます。
 
 ## 防げないこと
@@ -63,4 +70,4 @@ FOD、TVer、TELASA、バンダイチャンネル、ニコニコ、Crunchyroll�
 - 時刻サーバーへの通信を遮断したうえで、PC 起動前に BIOS の時計を進める
 - スマホなど別の端末を使う
 
-また、ブロック中は他のソフトも hosts ファイルを書き換えられません。
+また、インストール中は他のソフトも hosts ファイルを書き換えられません。

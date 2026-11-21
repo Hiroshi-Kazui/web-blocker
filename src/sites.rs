@@ -4,8 +4,10 @@
 //! - `host` : hosts ファイルとブラウザポリシーの両方でブロックする (ポリシーはサブドメインも含む)
 //! - `host/path` : ブラウザポリシーだけでブロックする (hosts はパス単位で止められないため)
 
-/// 既定のブロック対象。hosts はワイルドカード非対応なので、主要なサブドメインも列挙する。
-pub const DEFAULT_SITES: &[&str] = &[
+// hosts はワイルドカード非対応なので、主要なサブドメインも列挙する。
+
+/// 既定の時間帯ブロック対象 (ブロック時間中だけ止める)。
+pub const TIMED_DEFAULTS: &[&str] = &[
     // YouTube
     "youtube.com",
     "m.youtube.com",
@@ -14,6 +16,10 @@ pub const DEFAULT_SITES: &[&str] = &[
     "youtube-nocookie.com",
     "youtubei.googleapis.com",
     "googlevideo.com",
+];
+
+/// 既定の恒久ブロック対象 (時間帯に関係なく常に止める。外すこともできない)。
+pub const PERMANENT_DEFAULTS: &[&str] = &[
     // dアニメストア / Lemino (docomo)
     "animestore.docomo.ne.jp",
     "lemino.docomo.ne.jp",
@@ -51,6 +57,18 @@ pub const DEFAULT_SITES: &[&str] = &[
     "hidive.com",
     "bilibili.com",
     "bilibili.tv",
+    // 非公式のアニメ視聴サイト (ドメインを頻繁に変える)
+    "anitube.biz",
+    "anitube.pro",
+    "anitube.vip",
+    "gogoanime.by",
+    "hianimetv.cfd",
+    // 民放の見逃し配信 (TBS FREE / テレ朝動画 / ネットもテレ東)
+    "cu.tbs.co.jp",
+    "douga.tv-asahi.co.jp",
+    "video.tv-tokyo.co.jp",
+    // Rakuten Viki (韓国・中国ドラマ)
+    "viki.com",
 ];
 
 /// ユーザー入力を `host` または `host/path` に正規化する。
@@ -134,10 +152,11 @@ mod tests {
     }
 
     #[test]
-    fn default_sites_are_normalized() {
-        for s in DEFAULT_SITES {
+    fn default_sites_are_normalized_and_disjoint() {
+        for s in TIMED_DEFAULTS.iter().chain(PERMANENT_DEFAULTS) {
             assert_eq!(normalize_rule(s).unwrap(), *s);
         }
+        assert!(TIMED_DEFAULTS.iter().all(|s| !PERMANENT_DEFAULTS.contains(s)));
     }
 
     #[test]

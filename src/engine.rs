@@ -8,7 +8,7 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 use crate::clock::TrustedClock;
-use crate::config::{Config, Paths, State, save_json};
+use crate::config::{Config, Paths, Removal, State, save_json};
 use crate::harden::{self, CREATE_NO_WINDOW};
 use crate::ipc::{self, Op, Response};
 use crate::schedule::{format_hhmm, is_blocked, minute_of_day, parse_hhmm};
@@ -39,8 +39,8 @@ pub struct Engine {
     clock: TrustedClock,
     hosts_lock: Option<File>,
     last_harden: Option<Instant>,
+    /// ブロック時間中か (恒久ブロックは時間に関係なく常に効いている)
     pub blocked: bool,
-    pub uninstalled: bool,
 }
 
 /// hosts は文字コードが不定 (Shift_JIS のコメントなど) なので、1 バイト = 1 文字として
@@ -58,7 +58,7 @@ pub fn flush_dns() {
 
 impl Engine {
     pub fn new(paths: Paths, opts: Options, config: Config, state: State, clock: TrustedClock) -> Self {
-        Engine { paths, opts, config, state, clock, hosts_lock: None, last_harden: None, blocked: false, uninstalled: false }
+        Engine { paths, opts, config, state, clock, hosts_lock: None, last_harden: None, blocked: false }
     }
 
     pub fn log(&self, msg: &str) {
@@ -92,16 +92,13 @@ impl Engine {
                 ipc::respond(&self.paths, &Response { id: req.id, ok, message });
             }
         }
-        if self.uninstalled {
-            return;
-        }
 
-        let rules = self.config.effective_sites();
+        let rules = self.config.active_rules(self.blocked);
         if let Err(e) = self.apply_hosts(&rules) {
             self.log(&format!("hosts の更新に失敗: {e}"));
         }
         if self.opts.policies {
-            match policy::apply(&rules, self.blocked, &mut self.state.policy_ours) {
+            match policy::apply(&rules, &mut self.state.policy_ours) {
                 Ok(true) => self.log(&format!("ブラウザポリシーを更新 (ブロック={})", self.blocked)),
                 Ok(false) => {}
                 Err(e) => self.log(&format!("ブラウザポリシーの更新に失敗: {e}")),
@@ -124,7 +121,7 @@ impl Engine {
     }
 
     fn apply_hosts(&mut self, rules: &[String]) -> std::io::Result<()> {
-        let names = if self.blocked { hostnames(rules) } else { Vec::new() };
+        let names = hostnames(rules);
         let current = bytes_to_latin1(&fs::read(&self.paths.hosts)?);
         let desired = hosts::render(&current, &names);
         if desired != current {
@@ -133,7 +130,7 @@ impl Engine {
             flush_dns();
             self.log(&format!("hosts を更新 (ブロック対象 {} 件)", names.len()));
         }
-        if self.blocked && self.opts.lock_hosts {
+        if !names.is_empty() && self.opts.lock_hosts {
             if self.hosts_lock.is_none() {
                 // 読み取り専用で開き、他プロセスには読み取りだけを許す = 書き換え・削除・改名ができなくなる
                 self.hosts_lock = Some(OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).open(&self.paths.hosts)?);
@@ -155,13 +152,13 @@ impl Engine {
 
     fn handle(&mut self, op: Op) -> (bool, String) {
         match op {
-            Op::Add { sites } => {
+            Op::Add { sites, permanent } => {
                 let mut added = Vec::new();
                 let mut existing = Vec::new();
                 let mut invalid = Vec::new();
                 for s in &sites {
                     match normalize_rule(s) {
-                        Ok(r) if self.config.add_site(&r) => added.push(r),
+                        Ok(r) if self.config.add_site(&r, permanent) => added.push(r),
                         Ok(r) => existing.push(r),
                         Err(e) => invalid.push(e),
                     }
@@ -173,13 +170,14 @@ impl Engine {
                 }
                 let mut msg = Vec::new();
                 if !added.is_empty() {
-                    msg.push(format!("追加しました: {}", added.join(", ")));
+                    let kind = if permanent { "恒久ブロック" } else { "時間帯ブロック" };
+                    msg.push(format!("{kind}に追加しました: {}", added.join(", ")));
                 }
                 if !existing.is_empty() {
                     msg.push(format!("登録済みです: {}", existing.join(", ")));
                 }
                 msg.extend(invalid.iter().cloned());
-                self.log(&format!("サイト追加: {added:?}"));
+                self.log(&format!("サイト追加 (恒久={permanent}): {added:?}"));
                 (invalid.is_empty(), msg.join("\n"))
             }
             Op::Remove { sites } => {
@@ -187,11 +185,15 @@ impl Engine {
                     return (false, self.blocked_message("サイトを外すことは") + "追加だけは可能です。");
                 }
                 let mut removed = Vec::new();
+                let mut permanent = Vec::new();
                 let mut missing = Vec::new();
                 for s in &sites {
                     match normalize_rule(s) {
-                        Ok(r) if self.config.remove_site(&r) => removed.push(r),
-                        Ok(r) => missing.push(r),
+                        Ok(r) => match self.config.remove_site(&r) {
+                            Removal::Removed => removed.push(r),
+                            Removal::Permanent => permanent.push(r),
+                            Removal::NotFound => missing.push(r),
+                        },
                         Err(e) => missing.push(e),
                     }
                 }
@@ -204,11 +206,14 @@ impl Engine {
                 if !removed.is_empty() {
                     msg.push(format!("外しました: {}", removed.join(", ")));
                 }
+                if !permanent.is_empty() {
+                    msg.push(format!("恒久ブロックのため外せません: {}", permanent.join(", ")));
+                }
                 if !missing.is_empty() {
                     msg.push(format!("登録されていません: {}", missing.join(", ")));
                 }
                 self.log(&format!("サイト削除: {removed:?}"));
-                (missing.is_empty(), msg.join("\n"))
+                (missing.is_empty() && permanent.is_empty(), msg.join("\n"))
             }
             Op::SetHours { start, end } => {
                 if self.blocked {
@@ -229,33 +234,7 @@ impl Engine {
                 self.log(&format!("ブロック時間を変更: {}-{}", format_hhmm(s), format_hhmm(e)));
                 (true, format!("ブロック時間を {}〜{} に変更しました。", format_hhmm(s), format_hhmm(e)))
             }
-            Op::Uninstall => {
-                if self.blocked {
-                    return (false, self.blocked_message("アンインストール"));
-                }
-                match self.teardown() {
-                    Ok(()) => {
-                        self.uninstalled = true;
-                        self.log("アンインストール要求を受理");
-                        (true, "ブロックを解除しました。サービスを停止します。".into())
-                    }
-                    Err(e) => (false, format!("解除処理に失敗しました: {e}")),
-                }
-            }
         }
-    }
-
-    /// ブロックと保護をすべて外す。
-    fn teardown(&mut self) -> std::io::Result<()> {
-        self.blocked = false;
-        self.apply_hosts(&[])?;
-        if self.opts.policies {
-            policy::remove_all(&mut self.state.policy_ours)?;
-        }
-        if self.opts.harden {
-            harden::relax(&self.paths)?;
-        }
-        Ok(())
     }
 }
 

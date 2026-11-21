@@ -67,9 +67,6 @@ fn run() -> windows_service::Result<()> {
 
     loop {
         engine.tick();
-        if engine.uninstalled {
-            break;
-        }
         match rx.recv_timeout(TICK) {
             Err(mpsc::RecvTimeoutError::Timeout) => continue,
             _ => break,

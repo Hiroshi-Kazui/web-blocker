@@ -26,15 +26,17 @@ animeblock - 動画配信サイト夜間ブロッカー
   animeblock install                 サービスを登録して開始する
   animeblock status                  現在の状態を表示する
   animeblock list                    ブロック対象サイトを表示する
-  animeblock add <サイト>...         ブロック対象を追加する (いつでも可)
-  animeblock remove <サイト>...      ブロック対象から外す (ブロック時間外のみ)
+  animeblock add <サイト>...         時間帯ブロックに追加する (いつでも可)
+  animeblock add --permanent <サイト>...
+                                     恒久ブロックに追加する (いつでも可。二度と外せません)
+  animeblock remove <サイト>...      時間帯ブロックから外す (ブロック時間外のみ。恒久ブロックは外せない)
   animeblock set-hours <開始> <終了>  ブロック時間を変更する 例: set-hours 21:00 07:00 (時間外のみ)
-  animeblock uninstall               アンインストールする (ブロック時間外のみ)
   animeblock simulate --hosts <ファイル> --at <HH:MM>
                                      指定ファイルを hosts に見立てて 1 回だけ処理する (動作確認用)
 
 サイトは example.com / https://www.example.com/ / example.com/path の形で指定できます。
-ドメイン指定はサブドメインも含めてブラウザでブロックされます。";
+ドメイン指定はサブドメインも含めてブラウザでブロックされます。
+恒久ブロックを守るため、アンインストールの手段はありません。";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -42,10 +44,13 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("service") => service::run_dispatcher().map_err(|e| format!("サービスとして起動できません: {e}")),
         Some("install") => cmd_install(&paths),
-        Some("uninstall") => install::uninstall(&paths).map(|_| println!("アンインストールしました。")),
+        Some("uninstall") => Err("恒久ブロックを守るため、アンインストールはできません。".into()),
         Some("status") => cmd_status(&paths),
         Some("list") => cmd_list(&paths),
-        Some("add") => cmd_request(&paths, &args[1..], |sites| Op::Add { sites }),
+        Some("add") => match args.get(1).map(String::as_str) {
+            Some("--permanent") => cmd_request(&paths, &args[2..], |sites| Op::Add { sites, permanent: true }),
+            _ => cmd_request(&paths, &args[1..], |sites| Op::Add { sites, permanent: false }),
+        },
         Some("remove") => cmd_request(&paths, &args[1..], |sites| Op::Remove { sites }),
         Some("set-hours") => cmd_set_hours(&paths, &args[1..]),
         Some("simulate") => cmd_simulate(&args[1..]),
@@ -86,12 +91,19 @@ fn cmd_status(paths: &Paths) -> Result<(), String> {
         config.utc_offset_minutes / 60,
         (config.utc_offset_minutes % 60).abs()
     );
-    println!("対象サイト: {} 件", config.effective_sites().len());
+    println!(
+        "対象サイト: 恒久ブロック {} 件 / 時間帯ブロック {} 件",
+        config.permanent_rules().len(),
+        config.timed_rules().len()
+    );
     match load_json::<State>(&paths.state()) {
         Ok(s) => {
             println!("現在時刻 (サービス判定): {}", format_hhmm(minute_of_day(s.trusted_now_ms, config.utc_offset_minutes)));
             println!("時刻サーバーと同期: {}", if s.ntp_synced { "済み" } else { "未同期 (OS の時計を使用)" });
-            println!("状態: {}", if s.blocked { "ブロック中" } else { "ブロック時間外" });
+            println!(
+                "状態: {}",
+                if s.blocked { "ブロック時間中 (全サイトをブロック)" } else { "ブロック時間外 (恒久ブロックのみ)" }
+            );
         }
         Err(_) => println!("状態: 取得できません (サービス起動直後の可能性があります)"),
     }
@@ -100,17 +112,20 @@ fn cmd_status(paths: &Paths) -> Result<(), String> {
 
 fn cmd_list(paths: &Paths) -> Result<(), String> {
     let config: Config = load_json(&paths.config()).unwrap_or_else(|_| Config::new(install::local_utc_offset_minutes()));
-    println!("[既定サイト]");
-    for s in sites::DEFAULT_SITES {
+    println!("[恒久ブロック] 常にブロック・外せません");
+    for s in config.permanent_rules() {
+        println!("  {s}");
+    }
+    println!("[時間帯ブロック] {}〜{} だけブロック", config.block_start, config.block_end);
+    for s in sites::TIMED_DEFAULTS {
+        if config.is_permanent(s) {
+            continue;
+        }
         let mark = if config.disabled_defaults.iter().any(|d| d == s) { "  (外しています)" } else { "" };
         println!("  {s}{mark}");
     }
-    println!("[追加したサイト]");
-    if config.custom_sites.is_empty() {
-        println!("  (なし)");
-    }
-    for s in &config.custom_sites {
-        println!("  {s}");
+    for s in config.custom_sites.iter().filter(|s| !config.is_permanent(s)) {
+        println!("  {s}  (追加)");
     }
     Ok(())
 }

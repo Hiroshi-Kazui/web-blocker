@@ -13,10 +13,14 @@ use crate::config::{Paths, load_json, save_json};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Op {
-    Add { sites: Vec<String> },
+    Add {
+        sites: Vec<String>,
+        /// 恒久ブロックとして追加する
+        #[serde(default)]
+        permanent: bool,
+    },
     Remove { sites: Vec<String> },
     SetHours { start: String, end: String },
-    Uninstall,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

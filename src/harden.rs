@@ -22,8 +22,6 @@ const SID_USERS: &str = "*S-1-5-32-545";
 
 /// SYSTEM: 全権 / Administrators: 状態確認・開始・読み取りのみ / 対話ユーザー: 状態確認のみ
 const HARDENED_SDDL: &str = "D:(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;SY)(A;;CCLCSWRPLOCRRC;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
-/// Windows がサービス作成時に付ける標準のアクセス権
-const DEFAULT_SDDL: &str = "D:(A;;CCLCSWRPWPDTLOCRRC;;;SY)(A;;CCDCLCSWRPWPDTLOCRSDRCWDWO;;;BA)(A;;CCLCSWLOCRRC;;;IU)(A;;CCLCSWLOCRRC;;;SU)";
 
 const SAFEBOOT_KEYS: &[&str] = &[
     r"SYSTEM\CurrentControlSet\Control\SafeBoot\Minimal",
@@ -58,7 +56,10 @@ pub fn restrict_dirs(paths: &Paths) -> io::Result<()> {
     let users_rx = format!("{SID_USERS}:(OI)(CI)RX");
     let admins_m = format!("{SID_ADMINS}:(OI)(CI)M");
     for dir in [&paths.data_dir, &paths.install_dir] {
-        icacls(dir, &["/inheritance:r", "/grant:r", &system_f, &admins_rx, &users_rx, "/T", "/C", "/Q"])?;
+        // フォルダ自身だけ継承を切って権限を設定し、中身はそれを継承させる。
+        // (/inheritance:r を /T で中身にも掛けると、継承分しか持たないファイルの権限が空になり SYSTEM も開けなくなる)
+        icacls(dir, &["/inheritance:r", "/grant:r", &system_f, &admins_rx, &users_rx, "/C", "/Q"])?;
+        icacls(&dir.join("*"), &["/reset", "/T", "/C", "/Q"])?;
     }
     for dir in [paths.requests(), paths.responses()] {
         icacls(&dir, &["/grant", &admins_m, "/T", "/C", "/Q"])?;
@@ -82,21 +83,6 @@ pub fn lock_down(paths: &Paths) -> io::Result<()> {
     restrict_dirs(paths)?;
     for dir in [&paths.data_dir, &paths.install_dir] {
         icacls(dir, &["/setowner", SID_SYSTEM, "/T", "/C", "/Q"])?;
-    }
-    Ok(())
-}
-
-/// アンインストール時 (サービスから呼ぶ): 守りの設定を外し、管理者が削除できる状態に戻す。
-pub fn relax(paths: &Paths) -> io::Result<()> {
-    run_hidden("sc.exe", &["sdset", SERVICE_NAME, DEFAULT_SDDL])?;
-    let hklm = RegKey::predef(HKEY_LOCAL_MACHINE);
-    for base in SAFEBOOT_KEYS {
-        let _ = hklm.delete_subkey(format!(r"{base}\{SERVICE_NAME}"));
-    }
-    let admins_f = format!("{SID_ADMINS}:(OI)(CI)F");
-    for dir in [&paths.data_dir, &paths.install_dir] {
-        icacls(dir, &["/setowner", SID_ADMINS, "/T", "/C", "/Q"])?;
-        icacls(dir, &["/grant", &admins_f, "/T", "/C", "/Q"])?;
     }
     Ok(())
 }
